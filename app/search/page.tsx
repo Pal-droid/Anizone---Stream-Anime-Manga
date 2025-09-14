@@ -51,7 +51,10 @@ type PaginationInfo = {
 export default function SearchPage() {
   const sp = useSearchParams()
   const router = useRouter()
-  const [searchType, setSearchType] = useState<"anime" | "manga">("anime")
+  const [searchType, setSearchType] = useState<"anime" | "manga">(() => {
+    const tabParam = sp.get("tab")
+    return tabParam === "manga" ? "manga" : "anime"
+  })
   const [animeItems, setAnimeItems] = useState<AnimeItem[]>([])
   const [mangaItems, setMangaItems] = useState<MangaItem[]>([])
   const [loading, setLoading] = useState(false)
@@ -102,11 +105,19 @@ export default function SearchPage() {
 
     try {
       let r: Response
+      const hasFilters = hasOtherFilters()
+
+      console.log("[v0] Search params:", { keyword, genreId, hasFilters, queryString })
+
       if (genreId && !keyword) {
+        console.log("[v0] Using regular API for genre search")
         r = await fetch(`/api/search?${queryString}`)
-      } else if (keyword && !genreId && !hasOtherFilters()) {
-        r = await fetch(`/api/unified-search?${queryString}`)
+      } else if (keyword && !hasFilters) {
+        console.log("[v0] Using unified API for keyword-only search")
+        r = await fetch(`/api/unified-search?keyword=${encodeURIComponent(keyword)}`)
+        setIsUnified(true)
       } else {
+        console.log("[v0] Using regular API for filtered search")
         r = await fetch(`/api/search?${queryString}`)
       }
 
@@ -118,7 +129,9 @@ export default function SearchPage() {
       const j = await r.json()
       if (!j.ok) throw new Error(j.error || "Errore ricerca")
       setAnimeItems(j.items)
-      setIsUnified(j.unified || false)
+      if (!isUnified) {
+        setIsUnified(j.unified || false)
+      }
       setPagination(j.pagination || null)
     } catch (e: any) {
       setError(e?.message || "Errore nella ricerca")
@@ -161,11 +174,20 @@ export default function SearchPage() {
 
   const hasOtherFilters = () => {
     const allParams = Array.from(sp.entries())
-    return allParams.some(([key, value]) => {
-      if (key === "keyword" || key === "genre") return false
-      return value && value.trim() !== "" && value !== "any" && value !== "0"
+    const hasFilters = allParams.some(([key, value]) => {
+      if (key === "keyword" || key === "genre" || key === "tab" || key === "page") return false
+      return value && value.trim() !== "" && value !== "any" && value !== "0" && value !== "all"
     })
+    console.log("[v0] Has other filters:", hasFilters, "All params:", allParams)
+    return hasFilters
   }
+
+  useEffect(() => {
+    const tabParam = sp.get("tab")
+    if (tabParam === "manga" || tabParam === "anime") {
+      setSearchType(tabParam)
+    }
+  }, [sp])
 
   useEffect(() => {
     if (searchType === "anime") {
@@ -177,6 +199,20 @@ export default function SearchPage() {
     }
   }, [queryString, genreId, searchType])
 
+  useEffect(() => {
+    if (searchType === "manga" && keyword) {
+      searchManga({
+        keyword: keyword,
+        type: "all",
+        author: "",
+        year: "",
+        genre: "",
+        artist: "",
+        sort: "default",
+      })
+    }
+  }, [searchType, keyword])
+
   const navigateToPage = (pageNum: number) => {
     const newParams = new URLSearchParams(sp.toString())
     newParams.set("page", pageNum.toString())
@@ -187,7 +223,7 @@ export default function SearchPage() {
     <main className="min-h-screen">
       <SlideOutMenu currentPath="/search" />
 
-      <header className="border-b sticky top-0 bg-background/80 backdrop-blur z-10">
+      <header className="border-b sticky top-0 glass z-10">
         <div className="px-4 py-3 flex items-center justify-center">
           <Link href="/" className="text-lg font-extrabold tracking-tight">
             Anizone
