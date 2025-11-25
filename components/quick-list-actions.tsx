@@ -1,5 +1,6 @@
 "use client"
 
+import { usePathname, useSearchParams } from "next/navigation"
 import { useState, useEffect } from "react"
 import { Button } from "@/components/ui/button"
 import { Play, Check, Pause, X, RotateCcw, Plus } from "lucide-react"
@@ -13,7 +14,13 @@ type Props = {
   className?: string
 }
 
-type ListKey = "planning" | "completed" | "current" | "dropped" | "repeating" | "paused"
+type ListKey =
+  | "planning"
+  | "completed"
+  | "current"
+  | "dropped"
+  | "repeating"
+  | "paused"
 
 const LIST_ACTIONS = [
   {
@@ -57,26 +64,45 @@ const LIST_ACTIONS = [
 function normalizeSeriesKey(path: string): string {
   try {
     const url = new URL(path, "https://dummy.local")
-    const parts = url.pathname.split("/").filter(Boolean)
-    if (parts.length >= 2) {
-      return `/${parts[0]}/${parts[1]}`
-    }
     return url.pathname
   } catch {
-    const parts = path.split("/").filter(Boolean)
-    if (parts.length >= 2) {
-      return `/${parts[0]}/${parts[1]}`
-    }
     return path.startsWith("/") ? path : `/${path}`
   }
 }
 
-export function QuickListActions({ seriesKey, seriesPath, title, image, className }: Props) {
+export function QuickListActions({
+  seriesKey,
+  seriesPath,
+  title,
+  image,
+  className,
+}: Props) {
+  const pathname = usePathname()
+  const searchParams = useSearchParams()
+
   const [currentList, setCurrentList] = useState<ListKey | null>(null)
   const [isLoading, setIsLoading] = useState(false)
   const [isHydrated, setIsHydrated] = useState(false)
 
-  const normalizedSeriesKey = normalizeSeriesKey(seriesKey)
+  // ✅ determine type + key
+  let type: "manga" | "anime"
+  let keyToUse: string
+
+  if (pathname.startsWith("/manga/")) {
+    type = "manga"
+    keyToUse = normalizeSeriesKey(seriesKey)
+  } else if (pathname.startsWith("/watch")) {
+    type = "anime"
+    const queryPath = searchParams.get("path")
+    keyToUse = queryPath
+      ? normalizeSeriesKey(decodeURIComponent(queryPath))
+      : normalizeSeriesKey(seriesKey)
+  } else {
+    type = "anime" // fallback
+    keyToUse = normalizeSeriesKey(seriesKey)
+  }
+
+  const normalizedSeriesKey = keyToUse
   const normalizedSeriesPath = normalizeSeriesKey(seriesPath)
 
   useEffect(() => {
@@ -91,7 +117,12 @@ export function QuickListActions({ seriesKey, seriesPath, title, image, classNam
           const data = await response.json()
           if (data.ok && data.data?.lists) {
             for (const [listKey, listItems] of Object.entries(data.data.lists)) {
-              if (listItems && typeof listItems === "object" && normalizedSeriesKey in listItems) {
+              if (
+                listItems &&
+                typeof listItems === "object" &&
+                listItems[type] &&
+                normalizedSeriesKey in listItems[type]
+              ) {
                 setCurrentList(listKey as ListKey)
                 break
               }
@@ -99,19 +130,22 @@ export function QuickListActions({ seriesKey, seriesPath, title, image, classNam
           }
         }
       } catch (error) {
-        console.error("[v0] Failed to check list status:", error)
+        console.error(
+          "[QuickListActions] Failed to check list status:",
+          error
+        )
       }
     }
 
     if (normalizedSeriesKey && isHydrated) {
       checkListStatus()
     }
-  }, [normalizedSeriesKey, isHydrated])
+  }, [normalizedSeriesKey, isHydrated, type])
 
   async function toggleList(listKey: ListKey) {
     if (isLoading) return
-
     setIsLoading(true)
+
     try {
       if (currentList === listKey) {
         // Remove from current list
@@ -122,12 +156,11 @@ export function QuickListActions({ seriesKey, seriesPath, title, image, classNam
             op: "list-remove",
             list: listKey,
             seriesKey: normalizedSeriesKey,
+            type,
           }),
         })
 
-        if (response.ok) {
-          setCurrentList(null)
-        }
+        if (response.ok) setCurrentList(null)
       } else {
         // Remove from current list if exists
         if (currentList) {
@@ -138,6 +171,7 @@ export function QuickListActions({ seriesKey, seriesPath, title, image, classNam
               op: "list-remove",
               list: currentList,
               seriesKey: normalizedSeriesKey,
+              type,
             }),
           })
         }
@@ -153,15 +187,14 @@ export function QuickListActions({ seriesKey, seriesPath, title, image, classNam
             seriesPath: normalizedSeriesPath,
             title,
             image,
+            type,
           }),
         })
 
-        if (response.ok) {
-          setCurrentList(listKey)
-        }
+        if (response.ok) setCurrentList(listKey)
       }
     } catch (error) {
-      console.error("[v0] Error toggling list:", error)
+      console.error("[QuickListActions] Error toggling list:", error)
     } finally {
       setIsLoading(false)
     }
@@ -173,7 +206,13 @@ export function QuickListActions({ seriesKey, seriesPath, title, image, classNam
         {LIST_ACTIONS.slice(0, 3).map((action) => {
           const Icon = action.icon
           return (
-            <Button key={action.key} variant="ghost" size="sm" disabled className="h-8 w-8 p-0">
+            <Button
+              key={action.key}
+              variant="ghost"
+              size="sm"
+              disabled
+              className="h-8 w-8 p-0"
+            >
               <Icon className="h-4 w-4" />
             </Button>
           )
@@ -202,7 +241,7 @@ export function QuickListActions({ seriesKey, seriesPath, title, image, classNam
             className={cn(
               "h-8 w-8 p-0 transition-all duration-200",
               action.color,
-              isActive && "bg-current/10 text-current",
+              isActive && "bg-current/10 text-current"
             )}
             title={action.label}
           >

@@ -4,11 +4,12 @@ import Link from "next/link"
 import { Search, List, BookOpen, Calendar, Sparkles, Bug } from "lucide-react"
 import HeroSearch from "@/components/hero-search"
 import { TopAnime } from "@/components/top-anime"
-import { ContinueWatching } from "@/components/continue-watching"
 import { DiscoverSections } from "@/components/discover"
 import { AnimeContentSections } from "@/components/anime-content-sections"
 import { AnimatedLogo } from "@/components/animated-logo"
 import { NewAdditions } from "@/components/new-additions"
+import { OngoingAnime } from "@/components/ongoing-anime"
+import UpcomingFall2025 from "@/components/upcoming-fall-2025"
 import { LazySection } from "@/components/lazy-section"
 import { useIsDesktop } from "@/hooks/use-desktop"
 import { BugReportDialog } from "@/components/bug-report-dialog"
@@ -83,10 +84,6 @@ export default function HomePage() {
 
           <div className="grid grid-cols-12 gap-8">
             <div className="col-span-8 space-y-8">
-              <div className="glass rounded-xl p-8 transition-smooth hover:glow">
-                <ContinueWatching />
-              </div>
-
               <LazySection className="glass rounded-xl p-8 transition-smooth hover:glow">
                 <AnimeContentSections />
               </LazySection>
@@ -99,6 +96,14 @@ export default function HomePage() {
             <div className="col-span-4 space-y-8">
               <LazySection className="glass rounded-xl p-6 transition-smooth hover:glow">
                 <NewAdditions />
+              </LazySection>
+
+              <LazySection className="glass rounded-xl p-6 transition-smooth hover:glow">
+                <OngoingAnime />
+              </LazySection>
+
+              <LazySection>
+                <UpcomingFall2025 />
               </LazySection>
 
               <LazySection className="glass rounded-xl p-6 transition-smooth hover:glow">
@@ -140,16 +145,20 @@ export default function HomePage() {
         </div>
 
         <div className="space-y-8">
-          <div className="glass rounded-xl p-6 transition-smooth hover:glow">
-            <ContinueWatching />
-          </div>
-
           <LazySection className="glass rounded-xl p-6 transition-smooth hover:glow">
             <AnimeContentSections />
           </LazySection>
 
           <LazySection className="glass rounded-xl p-6 transition-smooth hover:glow">
             <NewAdditions />
+          </LazySection>
+
+          <LazySection className="glass rounded-xl p-6 transition-smooth hover:glow">
+            <OngoingAnime />
+          </LazySection>
+
+          <LazySection>
+            <UpcomingFall2025 />
           </LazySection>
 
           <LazySection className="glass rounded-xl p-6 transition-smooth hover:glow">

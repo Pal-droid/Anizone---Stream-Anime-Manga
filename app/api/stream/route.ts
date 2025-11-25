@@ -23,13 +23,11 @@ export async function GET(req: NextRequest) {
     const { searchParams } = new URL(req.url)
     const path = searchParams.get("path")
     const awId = searchParams.get("AW")
-    const asId = searchParams.get("AS")
 
-    if (awId || asId) {
+    if (awId) {
       try {
         const params = new URLSearchParams()
-        if (awId) params.set("AW", awId)
-        if (asId) params.set("AS", asId)
+        params.set("AW", awId)
 
         const unifiedRes = await fetch(`https://aw-au-as-api.vercel.app/api/stream?${params}`, {
           headers: {
@@ -40,16 +38,13 @@ export async function GET(req: NextRequest) {
             "Cache-Control": "no-cache",
             Pragma: "no-cache",
           },
-          signal: AbortSignal.timeout(25000), // Increased timeout
+          signal: AbortSignal.timeout(25000),
         })
 
         if (unifiedRes.ok) {
           const streamData = await unifiedRes.json()
-
           const animeWorldData = streamData.AnimeWorld
-          const animeSaturnData = streamData.AnimeSaturn
 
-          // Prefer AnimeWorld if available, fallback to AnimeSaturn
           if (animeWorldData?.available && animeWorldData.stream_url) {
             return NextResponse.json({
               ok: true,
@@ -59,59 +54,9 @@ export async function GET(req: NextRequest) {
               server: "AnimeWorld",
               unified: true,
             })
-          } else if (animeSaturnData?.available) {
-            let streamUrl = animeSaturnData.stream_url
-            const embed = animeSaturnData.embed
-
-            let isM3u8 = false
-
-            // Check if stream_url is already an m3u8
-            if (streamUrl && streamUrl.includes(".m3u8")) {
-              isM3u8 = true
-            }
-            // If embed contains base64 encoded HTML with m3u8, extract the m3u8 URL
-            else if (embed && embed.includes("data:text/html;base64")) {
-              try {
-                const base64Match = embed.match(/data:text\/html;base64,([^"]+)/)
-                if (base64Match) {
-                  const decodedHtml = atob(base64Match[1])
-
-                  // Try multiple patterns to find m3u8 URLs
-                  const m3u8Patterns = [
-                    /videoSrc\s*=\s*['"]([^'"]+\.m3u8[^'"]*)['"]/i,
-                    /src\s*:\s*['"]([^'"]+\.m3u8[^'"]*)['"]/i,
-                    /file\s*:\s*['"]([^'"]+\.m3u8[^'"]*)['"]/i,
-                    /source\s*:\s*['"]([^'"]+\.m3u8[^'"]*)['"]/i,
-                    /'([^']+\.m3u8[^']*)'/g,
-                    /"([^"]+\.m3u8[^"]*)"/g,
-                  ]
-
-                  for (const pattern of m3u8Patterns) {
-                    const match = decodedHtml.match(pattern)
-                    if (match && match[1]) {
-                      streamUrl = match[1]
-                      isM3u8 = true
-                      break
-                    }
-                  }
-                }
-              } catch (e) {
-                console.warn("Failed to parse AnimeSaturn m3u8 embed:", e)
-              }
-            }
-
-            return NextResponse.json({
-              ok: true,
-              streamUrl,
-              embed,
-              source: "https://aw-au-as-api.vercel.app/api/stream",
-              server: "AnimeSaturn",
-              unified: true,
-              isM3u8, // Flag for HLS streams
-            })
           } else {
             return NextResponse.json(
-              { ok: false, error: "Nessun server disponibile per questo episodio", streamData },
+              { ok: false, error: "AnimeWorld non disponibile per questo episodio", streamData },
               { status: 404 },
             )
           }
@@ -124,13 +69,13 @@ export async function GET(req: NextRequest) {
       }
     }
 
-    // Fallback to original AnimeWorld scraping
     if (!path) {
       return NextResponse.json(
-        { ok: false, error: "Parametro 'path' mancante. Esempio: /play/naruto-ita.Ze1Qv/NoZjU" },
+        { ok: false, error: "Parametro mancante. Usa AW=<id> oppure path=<path>" },
         { status: 400 },
       )
     }
+
     const url = path.startsWith("http") ? path : `${ANIMEWORLD_BASE}${path}`
 
     const { html, finalUrl } = await fetchHtml(url)

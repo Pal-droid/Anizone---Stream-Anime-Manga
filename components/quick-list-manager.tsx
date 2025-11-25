@@ -1,6 +1,7 @@
 "use client"
 
 import { useState, useEffect } from "react"
+import { usePathname, useSearchParams } from "next/navigation"
 import { Button } from "@/components/ui/button"
 import { Badge } from "@/components/ui/badge"
 import { Input } from "@/components/ui/input"
@@ -8,14 +9,7 @@ import { Plus, Play, Check, Pause, X, RotateCcw, BookOpen } from "lucide-react"
 import { authManager } from "@/lib/auth"
 import { LoginDialog } from "./login-dialog"
 
-interface QuickListManagerProps {
-  itemId: string
-  itemTitle: string
-  itemImage?: string
-  type: "anime" | "manga"
-  itemPath?: string
-}
-
+// Configuration for anime lists
 const ANIME_LIST_CONFIG = {
   da_guardare: { label: "Da guardare", icon: Plus, color: "bg-blue-500 hover:bg-blue-600" },
   in_corso: { label: "In corso", icon: Play, color: "bg-green-500 hover:bg-green-600" },
@@ -25,6 +19,7 @@ const ANIME_LIST_CONFIG = {
   in_revisione: { label: "In revisione", icon: RotateCcw, color: "bg-indigo-500 hover:bg-indigo-600" },
 }
 
+// Configuration for manga lists
 const MANGA_LIST_CONFIG = {
   da_leggere: { label: "Da leggere", icon: Plus, color: "bg-blue-500 hover:bg-blue-600" },
   in_corso: { label: "In corso", icon: Play, color: "bg-green-500 hover:bg-green-600" },
@@ -34,10 +29,48 @@ const MANGA_LIST_CONFIG = {
   in_revisione: { label: "In revisione", icon: RotateCcw, color: "bg-indigo-500 hover:bg-indigo-600" },
 }
 
-export function QuickListManager({ itemId, itemTitle, itemImage, type, itemPath }: QuickListManagerProps) {
-  const [user, setUser] = useState(null)
-  const [lists, setLists] = useState(null)
-  const [currentList, setCurrentList] = useState(null)
+// Normalize URL path for consistent ID handling
+function normalizeId(path: string): string {
+  try {
+    const url = new URL(path, "https://dummy.local")
+    return url.pathname
+  } catch {
+    return path.startsWith("/") ? path : `/${path}`
+  }
+}
+
+interface QuickListManagerProps {
+  itemId: string
+  itemTitle: string
+  itemImage?: string
+  itemPath?: string
+}
+
+export function QuickListManager({ itemId, itemTitle, itemImage, itemPath }: QuickListManagerProps) {
+  const pathname = usePathname()
+  const searchParams = useSearchParams()
+
+  // Auto-detect type and normalize ID
+  let type: "anime" | "manga"
+  let normalizedId: string
+
+  if (pathname.startsWith("/manga/")) {
+    type = "manga"
+    normalizedId = normalizeId(itemId)
+  } else if (pathname.startsWith("/watch")) {
+    type = "anime"
+    const queryPath = searchParams.get("path")
+    normalizedId = queryPath ? normalizeId(queryPath) : normalizeId(itemId)
+  } else {
+    type = "anime" // Fallback
+    normalizedId = normalizeId(itemId)
+  }
+
+  const LIST_CONFIG = type === "anime" ? ANIME_LIST_CONFIG : MANGA_LIST_CONFIG
+
+  const [user, setUser] = useState<any>(null)
+  const [lists, setLists] = useState<any>(null)
+  const [currentList, setCurrentList] = useState<string | null>(null)
   const [loading, setLoading] = useState(false)
   const [showLogin, setShowLogin] = useState(false)
   const [showEpisodeInput, setShowEpisodeInput] = useState(false)
@@ -45,186 +78,100 @@ export function QuickListManager({ itemId, itemTitle, itemImage, type, itemPath 
   const [showChapterInput, setShowChapterInput] = useState(false)
   const [chapterProgress, setChapterProgress] = useState("")
 
-  const LIST_CONFIG = type === "anime" ? ANIME_LIST_CONFIG : MANGA_LIST_CONFIG
-
+  // Subscribe to auth changes
   useEffect(() => {
     const unsubscribe = authManager.subscribe(setUser)
-    const currentUser = authManager.getUser()
-    console.log("[v0] QuickListManager - Current user:", currentUser)
-    setUser(currentUser)
-    return unsubscribe
+    setUser(authManager.getUser())
+    return () => unsubscribe()
   }, [])
 
+  // Load lists when user or type changes
   useEffect(() => {
-    if (user) {
-      console.log("[v0] User authenticated, loading lists")
-      loadLists()
-    } else {
-      console.log("[v0] No user, clearing lists")
+    if (user) loadLists()
+    else {
       setLists(null)
       setCurrentList(null)
     }
   }, [user, type])
 
+  // Update current list based on loaded lists
   useEffect(() => {
     if (lists) {
-      console.log("[v0] Checking current list for item:", itemId, "in lists:", lists)
       for (const [listKey, items] of Object.entries(lists)) {
-        if (Array.isArray(items) && items.includes(itemId)) {
-          console.log("[v0] Found item in list:", listKey)
+        if (Array.isArray(items) && items.includes(normalizedId)) {
           setCurrentList(listKey)
           return
         }
       }
-      console.log("[v0] Item not found in any list")
       setCurrentList(null)
     }
-  }, [lists, itemId])
+  }, [lists, normalizedId])
 
   const loadLists = async () => {
     setLoading(true)
     try {
-      console.log("[v0] Loading lists for type:", type)
-      const userLists = type === "anime" ? await authManager.getAnimeLists() : await authManager.getMangaLists()
-      console.log("[v0] Loaded lists:", userLists)
+      const userLists =
+        type === "anime" ? await authManager.getAnimeLists() : await authManager.getMangaLists()
       setLists(userLists)
-    } catch (error) {
-      console.error("[v0] Failed to load lists:", error)
+    } catch (e) {
+      console.error("Failed to load lists:", e)
     } finally {
       setLoading(false)
     }
   }
 
-  const updateList = async (targetList) => {
-    if (!lists || !user) {
-      console.log("[v0] Cannot update list - missing lists or user")
-      return
-    }
-
+  const updateList = async (targetList: string) => {
+    if (!lists || !user) return
     if (type === "anime" && targetList === "in_corso" && currentList !== "in_corso") {
       setShowEpisodeInput(true)
       return
     }
-
     if (type === "manga" && targetList === "in_corso" && currentList !== "in_corso") {
       setShowChapterInput(true)
       return
     }
-
     await performListUpdate(targetList)
   }
 
-  const performListUpdate = async (targetList, episode = null, chapter = null) => {
+  const performListUpdate = async (
+    targetList: string,
+    episode: string | null = null,
+    chapter: string | null = null
+  ) => {
     setLoading(true)
     try {
-      console.log("[v0] Updating list:", { targetList, currentList, itemId, user: user.username, episode, chapter })
-
       const newLists = { ...lists }
-
-      // Remove from current list if exists
       if (currentList && newLists[currentList]) {
-        newLists[currentList] = newLists[currentList].filter((id) => id !== itemId)
-        console.log("[v0] Removed from current list:", currentList)
+        newLists[currentList] = newLists[currentList].filter((id: string) => id !== normalizedId)
       }
 
-      // Add to target list if different from current
       if (targetList !== currentList) {
-        if (!newLists[targetList]) {
-          newLists[targetList] = []
-        }
-        newLists[targetList].push(itemId)
-        console.log("[v0] Added to target list:", targetList)
+        if (!newLists[targetList]) newLists[targetList] = []
+        newLists[targetList].push(normalizedId)
         setCurrentList(targetList)
-
-        if (type === "anime" && targetList === "in_corso" && episode) {
-          try {
-            console.log("[v0] Syncing continue watching data for anime:", itemId)
-
-            // Update continue watching via backend API
-            const continueWatchingData = {
-              [itemId]: {
-                anime: itemTitle,
-                episode: Number.parseInt(episode),
-                progress: "0:00",
-              },
-            }
-
-            await authManager.updateContinueWatching(continueWatchingData)
-            console.log("[v0] Updated continue watching with episode:", episode)
-
-            // Also trigger a custom event to refresh continue watching component
-            window.dispatchEvent(
-              new CustomEvent("anizone:continue-watching-updated", {
-                detail: { animeId: itemId, episode: Number.parseInt(episode) },
-              }),
-            )
-          } catch (error) {
-            console.error("[v0] Failed to update continue watching:", error)
-          }
-        }
-
-        if (type === "anime" && targetList === "in_corso" && !episode) {
-          try {
-            console.log("[v0] Auto-syncing continue watching for anime:", itemId)
-
-            const continueWatchingData = {
-              [itemId]: {
-                anime: itemTitle,
-                episode: 1,
-                progress: "0:00",
-              },
-            }
-
-            await authManager.updateContinueWatching(continueWatchingData)
-            console.log("[v0] Auto-synced continue watching with episode 1")
-
-            // Trigger refresh event
-            window.dispatchEvent(
-              new CustomEvent("anizone:continue-watching-updated", {
-                detail: { animeId: itemId, episode: 1 },
-              }),
-            )
-          } catch (error) {
-            console.error("[v0] Failed to auto-sync continue watching:", error)
-          }
-        }
-
-        if (type === "manga" && targetList === "in_corso") {
-          try {
-            const continueReading = (await authManager.getContinueReading()) || {}
-            const updatedContinueReading = {
-              ...continueReading,
-              [itemId]: {
-                manga: itemTitle,
-                chapter: chapter ? Number.parseInt(chapter) : 1,
-                progress: "0%",
-              },
-            }
-            await authManager.updateContinueReading(updatedContinueReading)
-            console.log("[v0] Updated continue reading for manga with chapter:", chapter || 1)
-          } catch (error) {
-            console.error("[v0] Failed to update continue reading:", error)
-          }
-        }
       } else {
-        console.log("[v0] Removed from list (toggle off)")
         setCurrentList(null)
       }
 
-      console.log("[v0] New lists structure:", newLists)
-
       const success =
-        type === "anime" ? await authManager.updateAnimeLists(newLists) : await authManager.updateMangaLists(newLists)
+        type === "anime"
+          ? await authManager.updateAnimeLists(newLists)
+          : await authManager.updateMangaLists(newLists)
 
       if (success) {
         setLists(newLists)
-        console.log("[v0] List updated successfully")
+        if (type === "anime" && targetList === "in_corso" && episode) {
+          await fetch("/user/continue-watching", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ [normalizedId]: episode }),
+          })
+        }
       } else {
-        console.log("[v0] Failed to update list, reverting")
         setCurrentList(currentList)
       }
-    } catch (error) {
-      console.error("[v0] Failed to update list:", error)
+    } catch (e) {
+      console.error("Failed to update list:", e)
       setCurrentList(currentList)
     } finally {
       setLoading(false)
@@ -236,11 +183,8 @@ export function QuickListManager({ itemId, itemTitle, itemImage, type, itemPath 
   }
 
   const handleEpisodeSubmit = () => {
-    if (episodeProgress.trim()) {
-      performListUpdate("in_corso", episodeProgress.trim())
-    } else {
-      performListUpdate("in_corso")
-    }
+    if (episodeProgress.trim()) performListUpdate("in_corso", episodeProgress.trim())
+    else performListUpdate("in_corso")
   }
 
   const handleEpisodeCancel = () => {
@@ -249,11 +193,8 @@ export function QuickListManager({ itemId, itemTitle, itemImage, type, itemPath 
   }
 
   const handleChapterSubmit = () => {
-    if (chapterProgress.trim()) {
-      performListUpdate("in_corso", null, chapterProgress.trim())
-    } else {
-      performListUpdate("in_corso", null, "1")
-    }
+    if (chapterProgress.trim()) performListUpdate("in_corso", null, chapterProgress.trim())
+    else performListUpdate("in_corso", null, "1")
   }
 
   const handleChapterCancel = () => {
@@ -261,18 +202,27 @@ export function QuickListManager({ itemId, itemTitle, itemImage, type, itemPath 
     setChapterProgress("")
   }
 
+  // Render: Login prompt if not authenticated
   if (!user) {
-      return (
-        <>
-          <Button variant="outline" size="sm" onClick={() => setShowLogin(true)} className="gap-2">
+    return (
+      <>
+        <div className="flex justify-center">
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={() => setShowLogin(true)}
+            className="flex items-center justify-center gap-2 whitespace-nowrap"
+          >
             <BookOpen className="h-4 w-4" />
-            Accedi per aggiungere<br />alle liste
+            <span>Accedi per aggiungere alle liste</span>
           </Button>
-          <LoginDialog isOpen={showLogin} onClose={() => setShowLogin(false)} />
-        </>
-      )
-    }
+        </div>
+        <LoginDialog isOpen={showLogin} onClose={() => setShowLogin(false)} />
+      </>
+    )
+  }
 
+  // Render: Loading state
   if (loading) {
     return (
       <div className="flex gap-2">
@@ -282,6 +232,7 @@ export function QuickListManager({ itemId, itemTitle, itemImage, type, itemPath 
     )
   }
 
+  // Render: Episode input for anime
   if (showEpisodeInput) {
     return (
       <div className="flex flex-col gap-2 p-3 border rounded-lg bg-background">
@@ -306,6 +257,7 @@ export function QuickListManager({ itemId, itemTitle, itemImage, type, itemPath 
     )
   }
 
+  // Render: Chapter input for manga
   if (showChapterInput) {
     return (
       <div className="flex flex-col gap-2 p-3 border rounded-lg bg-background">
@@ -330,6 +282,7 @@ export function QuickListManager({ itemId, itemTitle, itemImage, type, itemPath 
     )
   }
 
+  // Render: List management buttons
   return (
     <div className="flex flex-wrap gap-2">
       {Object.entries(LIST_CONFIG).map(([listKey, config]) => {

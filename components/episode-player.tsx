@@ -13,7 +13,7 @@ declare global {
   }
 }
 
-type Episode = { num: number; href: string; id?: string }
+type Episode = { num: number; href: string; id?: string; unifiedData?: any }
 type Source = { name: string; url: string; id: string }
 
 function epKey(e: Episode) {
@@ -56,6 +56,14 @@ function extractAnimeIdFromUrl(url: string): string {
   }
 }
 
+function extractAnimeIdFromSourceId(sourceId: string): string {
+  // If it contains a slash, it might be an episode ID - extract the anime part
+  if (sourceId.includes("/")) {
+    return sourceId.split("/")[0]
+  }
+  return sourceId
+}
+
 function storageGet<T = any>(key: string): T | null {
   try {
     const raw = localStorage.getItem(key)
@@ -65,6 +73,7 @@ function storageGet<T = any>(key: string): T | null {
     return null
   }
 }
+
 function storageSet(key: string, val: any) {
   try {
     localStorage.setItem(key, JSON.stringify(val))
@@ -87,6 +96,7 @@ export function EpisodePlayer({
   const [episodes, setEpisodes] = useState<Episode[]>([])
   const [selectedKey, setSelectedKey] = useState<string | null>(null)
   const [selectedServer, setSelectedServer] = useState<string>("AnimeWorld")
+  const [selectedResolution, setSelectedResolution] = useState<string>("1080")
   const [streamUrl, setStreamUrl] = useState<string | null>(null)
   const [embedUrl, setEmbedUrl] = useState<string | null>(null)
   const [episodeRefUrl, setEpisodeRefUrl] = useState<string | null>(null)
@@ -97,20 +107,69 @@ export function EpisodePlayer({
   const [autoNext, setAutoNext] = useState<boolean>(true)
   const videoRef = useRef<HTMLVideoElement | null>(null)
   const iframeRef = useRef<HTMLIFrameElement | null>(null)
-  const [useHlsFallback, setUseHlsFallback] = useState(false)
   const hlsRef = useRef<any>(null)
-
-  const seriesKeyForStore = useMemo(() => seriesBaseFromPath(path), [path])
+  const currentPathRef = useRef<string>("")
   const lastSentAtRef = useRef<number>(0)
   const lastSentSecRef = useRef<number>(0)
   const restoreDoneRef = useRef<boolean>(false)
 
+  const seriesKeyForStore = useMemo(() => seriesBaseFromPath(path), [path])
+
   const availableServers = useMemo(() => {
-    const servers = sources?.map((s) => s.name) || ["AnimeWorld"]
-    return servers.length > 0 ? servers : ["AnimeWorld"]
+    const serverNames = sources?.map((s) => s.name) || []
+    // Only include AnimeWorld for now, others are unavailable
+    return serverNames.filter((name) => name === "AnimeWorld")
   }, [sources])
 
+  const serverDisplayNames = useMemo(
+    () => ({
+      AnimeWorld: "World",
+      AnimeSaturn: "Saturn (non disponibile)",
+      AnimePahe: "Pahe (non disponibile)",
+    }),
+    [],
+  )
+
   const isEmbedServer = selectedServer === "AnimeSaturn"
+  const isAnimePahe = selectedServer === "AnimePahe"
+
+  const availableResolutions = ["1080", "720", "480", "360"]
+
+  useEffect(() => {
+    if (currentPathRef.current && currentPathRef.current !== path) {
+      console.log("[v0] Anime path changed from", currentPathRef.current, "to", path, "- clearing cached data")
+
+      try {
+        const oldAnimeId = extractAnimeIdFromUrl(currentPathRef.current)
+        const newAnimeId = extractAnimeIdFromUrl(path)
+
+        if (oldAnimeId !== newAnimeId) {
+          sessionStorage.removeItem(`anizone:sources:${currentPathRef.current}`)
+
+          const keysToRemove = []
+          for (let i = 0; i < localStorage.length; i++) {
+            const key = localStorage.key(i)
+            if (key && (key.includes(oldAnimeId) || key.includes(currentPathRef.current))) {
+              keysToRemove.push(key)
+            }
+          }
+          keysToRemove.forEach((key) => localStorage.removeItem(key))
+
+          setEpisodes([])
+          setSelectedKey(null)
+          setStreamUrl(null)
+          setEmbedUrl(null)
+          setEpisodeRefUrl(null)
+          setProxyUrl(null)
+          setError(null)
+          setLoadingEpisodes(true)
+        }
+      } catch (e) {
+        console.log("[v0] Error clearing cached data:", e)
+      }
+    }
+    currentPathRef.current = path
+  }, [path])
 
   useEffect(() => {
     try {
@@ -119,6 +178,7 @@ export function EpisodePlayer({
       else setAutoNext(true)
     } catch {}
   }, [])
+
   useEffect(() => {
     try {
       localStorage.setItem("anizone:autoNext", autoNext ? "1" : "0")
@@ -139,107 +199,57 @@ export function EpisodePlayer({
       try {
         console.log("[v0] Loading episodes for server:", selectedServer, "with sources:", sources)
 
-        if (!sources || sources.length === 0) {
-          console.log("[v0] No sources provided, trying to get from sessionStorage")
+        let currentSources = sources
 
-          try {
-            const storedSources = sessionStorage.getItem(`anizone:sources:${path}`)
-            if (storedSources) {
-              const parsedSources = JSON.parse(storedSources)
-              if (Array.isArray(parsedSources) && parsedSources.length > 0) {
-                console.log("[v0] Found sources in sessionStorage:", parsedSources)
-                const awSource = parsedSources.find((s: any) => s.name === "AnimeWorld")
-                const asSource = parsedSources.find((s: any) => s.name === "AnimeSaturn")
-
-                if (awSource || asSource) {
-                  const params = new URLSearchParams()
-                  if (awSource) {
-                    const animeId = extractAnimeIdFromUrl(awSource.url)
-                    params.set("AW", animeId)
-                    console.log("[v0] Using anime ID from URL:", animeId, "extracted from:", awSource.url)
-                  }
-                  if (asSource) {
-                    params.set("AS", asSource.id)
-                    console.log("[v0] Using AnimeSaturn ID:", asSource.id, "from source object")
-                  }
-
-                  const apiUrl = `https://aw-au-as-api.vercel.app/api/episodes?${params}`
-                  console.log("[v0] Calling unified episodes API with stored sources:", apiUrl)
-
-                  const r = await fetch(apiUrl, {
-                    signal: abort.signal,
-                    headers: {
-                      "User-Agent":
-                        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) AnizoneBot/1.0 Safari/537.36",
-                    },
-                  })
-
-                  if (r.ok) {
-                    const unifiedEpisodes = await r.json()
-                    if (Array.isArray(unifiedEpisodes)) {
-                      const eps: Episode[] = unifiedEpisodes
-                        .map((ep: any) => ({
-                          num: ep.episode_number,
-                          href:
-                            selectedServer === "AnimeWorld"
-                              ? ep.sources.AnimeWorld?.url || ""
-                              : ep.sources.AnimeSaturn?.url || "",
-                          id:
-                            selectedServer === "AnimeWorld"
-                              ? ep.sources.AnimeWorld?.id || ""
-                              : ep.sources.AnimeSaturn?.id || "",
-                          unifiedData: ep,
-                        }))
-                        .filter((ep: Episode) => ep.href || ep.id)
-
-                      setEpisodes(eps)
-
-                      let epParam: number | null = null
-                      try {
-                        const u = new URL(typeof window !== "undefined" ? window.location.href : "https://dummy.local")
-                        const v = u.searchParams.get("ep")
-                        if (v) epParam = Number.parseInt(v, 10)
-                      } catch {}
-
-                      if (epParam && eps.some((e) => e.num === epParam)) {
-                        const match = eps.find((e) => e.num === epParam)!
-                        setSelectedKey(epKey(match))
-                      } else if (eps.length > 0) {
-                        setSelectedKey(epKey(eps[0]))
-                      }
-                      return
-                    }
-                  }
-                }
-              }
+        // Try to get sources from sessionStorage first
+        try {
+          const storedSources = sessionStorage.getItem(`anizone:sources:${path}`)
+          if (storedSources) {
+            const parsedSources = JSON.parse(storedSources)
+            if (Array.isArray(parsedSources) && parsedSources.length > 0) {
+              console.log("[v0] Using fresh sources from sessionStorage:", parsedSources)
+              currentSources = parsedSources
             }
-          } catch (e) {
-            console.log("[v0] Failed to get sources from sessionStorage:", e)
           }
-
-          throw new Error("No sources available. Please go back and select an anime from the main page.")
+        } catch (e) {
+          console.log("[v0] Could not get sources from sessionStorage:", e)
         }
 
-        const awSource = sources.find((s) => s.name === "AnimeWorld")
-        const asSource = sources.find((s) => s.name === "AnimeSaturn")
+        if (!currentSources || currentSources.length === 0) {
+          console.log("[v0] No sources available after checking both props and sessionStorage")
+          throw new Error("No sources available. Please go back and select an anime from the search page.")
+        }
 
-        console.log("[v0] Found sources:", { awSource, asSource })
+        // Find the source for each provider
+        const awSource = currentSources.find((s) => s.name === "AnimeWorld")
+        const asSource = currentSources.find((s) => s.name === "AnimeSaturn")
+        const apSource = currentSources.find((s) => s.name === "AnimePahe")
 
+        console.log("[v0] Found sources:", { awSource, asSource, apSource })
+
+        // Build params using the correct IDs from sources
         const params = new URLSearchParams()
+
         if (awSource) {
-          const animeId = extractAnimeIdFromUrl(awSource.url)
+          // Use the ID directly from the source object (e.g., "fly-me-to-the-moon.cGPnE")
+          const animeId = awSource.id || extractAnimeIdFromSourceId(awSource.id)
           params.set("AW", animeId)
-          console.log("[v0] Using anime ID from URL:", animeId, "extracted from:", awSource.url)
+          console.log("[v0] Using AnimeWorld ID:", animeId)
         }
         if (asSource) {
           params.set("AS", asSource.id)
-          console.log("[v0] Using AnimeSaturn ID:", asSource.id, "from source object")
+          console.log("[v0] Using AnimeSaturn ID:", asSource.id)
+        }
+        if (apSource) {
+          params.set("AP", apSource.id)
+          console.log("[v0] Using AnimePahe ID:", apSource.id)
         }
 
-        if (!awSource && !asSource) {
-          throw new Error("No valid AnimeWorld or AnimeSaturn sources found")
+        if (!awSource && !asSource && !apSource) {
+          throw new Error("No valid AnimeWorld, AnimeSaturn, or AnimePahe sources found in the sources list")
         }
 
+        // Call the external unified API directly
         const apiUrl = `https://aw-au-as-api.vercel.app/api/episodes?${params}`
         console.log("[v0] Calling unified episodes API:", apiUrl)
 
@@ -252,12 +262,10 @@ export function EpisodePlayer({
         })
 
         console.log("[v0] Unified episodes API response status:", r.status)
-        console.log("[v0] Response headers:", Object.fromEntries(r.headers.entries()))
 
         if (!r.ok) {
           const errorText = await r.text()
-          console.log("[v0] Unified episodes API error response:", errorText)
-          throw new Error(`Unified API failed with status ${r.status}: ${errorText}`)
+          throw new Error(`API failed with status ${r.status}: ${errorText}`)
         }
 
         const unifiedEpisodes = await r.json()
@@ -268,19 +276,31 @@ export function EpisodePlayer({
           throw new Error("Invalid response format from unified API")
         }
 
+        // Process episodes - only use AnimeWorld for now
         const eps: Episode[] = unifiedEpisodes
-          .map((ep: any) => ({
-            num: ep.episode_number,
-            href:
-              selectedServer === "AnimeWorld" ? ep.sources.AnimeWorld?.url || "" : ep.sources.AnimeSaturn?.url || "",
-            id: selectedServer === "AnimeWorld" ? ep.sources.AnimeWorld?.id || "" : ep.sources.AnimeSaturn?.id || "",
-            unifiedData: ep,
-          }))
+          .map((ep: any) => {
+            let href = ""
+            let id = ""
+
+            // Only use AnimeWorld since AnimeSaturn and AnimePahe are marked unavailable
+            if (ep.sources.AnimeWorld?.available) {
+              href = ep.sources.AnimeWorld.url || ""
+              id = ep.sources.AnimeWorld.id || ""
+            }
+
+            return {
+              num: ep.episode_number,
+              href,
+              id,
+              unifiedData: ep,
+            }
+          })
           .filter((ep: Episode) => ep.href || ep.id)
 
         console.log("[v0] Processed episodes:", eps)
         setEpisodes(eps)
 
+        // Handle episode param from URL
         let epParam: number | null = null
         try {
           const u = new URL(typeof window !== "undefined" ? window.location.href : "https://dummy.local")
@@ -297,24 +317,25 @@ export function EpisodePlayer({
       } catch (e: any) {
         if (abort.signal.aborted) return
         console.log("[v0] Episode loading error:", e)
-        console.log("[v0] Error details:", {
-          message: e?.message,
-          stack: e?.stack,
-          name: e?.name,
-          cause: e?.cause,
-        })
         setError(e?.message || "Errore nel caricamento episodi")
       } finally {
         if (!abort.signal.aborted) setLoadingEpisodes(false)
       }
     })()
     return () => abort.abort()
-  }, [path, selectedServer, sources, availableServers])
+  }, [path, selectedServer, sources])
 
   const selectedEpisode = useMemo(
     () => (selectedKey ? (episodes.find((e) => epKey(e) === selectedKey) ?? null) : null),
     [selectedKey, episodes],
   )
+
+  useEffect(() => {
+    if (isAnimePahe && selectedEpisode) {
+      setStreamUrl(null)
+      setProxyUrl(null)
+    }
+  }, [selectedResolution, isAnimePahe])
 
   useEffect(() => {
     if (!selectedEpisode) return
@@ -327,33 +348,34 @@ export function EpisodePlayer({
       setEpisodeRefUrl(null)
       setProxyUrl(null)
       setError(null)
-      setUseHlsFallback(false)
+
+      if (hlsRef.current) {
+        hlsRef.current.destroy()
+        hlsRef.current = null
+      }
 
       try {
         console.log("[v0] Loading stream for episode:", selectedEpisode, "server:", selectedServer)
 
-        if (!(selectedEpisode as any).unifiedData) {
+        const unifiedEp = selectedEpisode.unifiedData
+        if (!unifiedEp) {
           throw new Error("No unified data available for this episode")
         }
 
-        if (!sources || sources.length === 0) {
-          throw new Error("No sources available for streaming")
-        }
-
+        // Build stream params using the episode-specific ID
         const params = new URLSearchParams()
-        const unifiedEp = (selectedEpisode as any).unifiedData
 
         if (selectedServer === "AnimeWorld" && unifiedEp.sources.AnimeWorld?.id) {
+          // Use the episode ID (e.g., "fly-me-to-the-moon.cGPnE/EsEPtO")
           params.set("AW", unifiedEp.sources.AnimeWorld.id)
-        }
-        if (selectedServer === "AnimeSaturn" && unifiedEp.sources.AnimeSaturn?.id) {
-          params.set("AS", unifiedEp.sources.AnimeSaturn.id)
+          console.log("[v0] Using AnimeWorld episode ID for stream:", unifiedEp.sources.AnimeWorld.id)
         }
 
         if (!params.toString()) {
           throw new Error(`No valid ${selectedServer} source ID found for this episode`)
         }
 
+        // Call the external unified stream API
         const apiUrl = `https://aw-au-as-api.vercel.app/api/stream?${params}`
         console.log("[v0] Calling unified stream API:", apiUrl)
 
@@ -369,10 +391,12 @@ export function EpisodePlayer({
 
         if (!r.ok) {
           const errorText = await r.text()
-          throw new Error(`Unified stream API failed with status ${r.status}: ${errorText}`)
+          throw new Error(`Stream API failed with status ${r.status}: ${errorText}`)
         }
 
         const streamData = await r.json()
+        console.log("[v0] Stream data:", streamData)
+
         const serverData = streamData[selectedServer]
 
         if (!serverData || !serverData.available) {
@@ -381,25 +405,14 @@ export function EpisodePlayer({
 
         if (selectedServer === "AnimeWorld" && serverData.stream_url) {
           const direct = serverData.stream_url
+          console.log("[v0] Got AnimeWorld stream URL:", direct)
           setStreamUrl(direct)
           setEpisodeRefUrl(selectedEpisode.href)
 
+          // Create proxy URL for playback
           const stamp = Math.floor(Date.now() / 60000)
           const proxy = `/api/proxy-stream?src=${encodeURIComponent(direct)}&ref=${encodeURIComponent(selectedEpisode.href)}&ts=${stamp}`
           setProxyUrl(proxy)
-        } else if (selectedServer === "AnimeSaturn") {
-          const finalStreamUrl = serverData.stream_url
-
-          if (finalStreamUrl) {
-            // Use iframe embed for all AnimeSaturn streams (both MP4 and M3U8)
-            const embedIframeUrl = `https://animesaturn-proxy.onrender.com/embed?url=${encodeURIComponent(finalStreamUrl)}`
-            setEmbedUrl(embedIframeUrl)
-          } else if (serverData.embed) {
-            // Fallback to existing embed HTML if no direct stream URL
-            setEmbedUrl(`data:text/html;charset=utf-8,${encodeURIComponent(serverData.embed)}`)
-          } else {
-            throw new Error("No valid stream data found for AnimeSaturn")
-          }
         } else {
           throw new Error(`Invalid stream data format for ${selectedServer}`)
         }
@@ -412,66 +425,16 @@ export function EpisodePlayer({
       }
     })()
     return () => abort.abort()
-  }, [selectedEpisode, selectedServer, sources])
+  }, [selectedEpisode, selectedServer, selectedResolution, path])
 
   useEffect(() => {
-    if (!useHlsFallback || !proxyUrl || !videoRef.current) return
-
-    const video = videoRef.current
-
-    if (!window.Hls) {
-      const script = document.createElement("script")
-      script.src = "https://cdn.jsdelivr.net/npm/hls.js@latest"
-      script.onload = () => initializeHls()
-      document.head.appendChild(script)
-    } else {
-      initializeHls()
-    }
-
-    function initializeHls() {
-      if (!window.Hls || !video || !proxyUrl) return
-
-      if (hlsRef.current) {
-        hlsRef.current.destroy()
-        hlsRef.current = null
-      }
-
-      if (window.Hls.isSupported()) {
-        console.log("[v0] Initializing HLS.js for m3u8 stream:", proxyUrl)
-        const hls = new window.Hls({
-          enableWorker: true,
-          lowLatencyMode: false,
-        })
-
-        hlsRef.current = hls
-        hls.loadSource(proxyUrl)
-        hls.attachMedia(video)
-
-        hls.on(window.Hls.Events.MANIFEST_PARSED, () => {
-          console.log("[v0] HLS manifest parsed successfully")
-        })
-
-        hls.on(window.Hls.Events.ERROR, (event: any, data: any) => {
-          console.error("[v0] HLS error:", data)
-          if (data.fatal) {
-            setError("Errore nella riproduzione HLS")
-          }
-        })
-      } else if (video.canPlayType("application/vnd.apple.mpegurl")) {
-        console.log("[v0] Using native HLS support")
-        video.src = proxyUrl
-      } else {
-        setError("HLS non supportato in questo browser")
-      }
-    }
-
     return () => {
       if (hlsRef.current) {
         hlsRef.current.destroy()
         hlsRef.current = null
       }
     }
-  }, [useHlsFallback, proxyUrl])
+  }, [proxyUrl, selectedServer])
 
   useEffect(() => {
     if (isEmbedServer) return
@@ -500,14 +463,53 @@ export function EpisodePlayer({
     }
   }, [selectedEpisode, seriesKeyForStore, seriesTitle, isEmbedServer])
 
-  const onEnd = () => {
-    if (!autoNext || !selectedEpisode) return
-    const idx = episodes.findIndex((e) => epKey(e) === epKey(selectedEpisode))
-    if (idx >= 0 && idx + 1 < episodes.length) {
-      const next = episodes[idx + 1]
-      setSelectedKey(epKey(next))
+  useEffect(() => {
+    if (!isEmbedServer || !selectedEpisode) return
+    const iframe = iframeRef.current
+    if (!iframe) return
+
+    const animeId = extractAnimeIdFromUrl(path)
+    const progressKey = `progress:${animeId}:${selectedEpisode.num}`
+    let restoreDone = false
+
+    const savedTime = storageGet<number>(progressKey) || 0
+
+    const saveProgress = (currentTime: number) => {
+      storageSet(progressKey, Math.floor(currentTime))
+      broadcastProgress(Math.floor(currentTime))
     }
-  }
+
+    const handleMessage = (e: MessageEvent) => {
+      if (e.source !== iframe.contentWindow) return
+      if (!e.data?.type) return
+
+      if (e.data.type === "saturn-video-ended") {
+        onEnd()
+      }
+
+      if (e.data.type === "saturn-progress" && typeof e.data.currentTime === "number") {
+        saveProgress(e.data.currentTime)
+      }
+    }
+
+    window.addEventListener("message", handleMessage)
+
+    const sendResume = () => {
+      if (savedTime > 0 && !restoreDone && iframe.contentWindow) {
+        iframe.contentWindow.postMessage({ type: "resume-video", time: savedTime }, "*")
+        restoreDone = true
+      }
+    }
+
+    sendResume()
+
+    iframe.addEventListener("load", sendResume)
+
+    return () => {
+      window.removeEventListener("message", handleMessage)
+      iframe.removeEventListener("load", sendResume)
+    }
+  }, [isEmbedServer, selectedEpisode, path])
 
   async function saveContinueForClick(ep: Episode) {
     try {
@@ -576,6 +578,15 @@ export function EpisodePlayer({
     }).catch(() => {})
   }
 
+  const onEnd = () => {
+    if (!autoNext || !selectedEpisode) return
+    const idx = episodes.findIndex((e) => epKey(e) === epKey(selectedEpisode))
+    if (idx >= 0 && idx + 1 < episodes.length) {
+      const next = episodes[idx + 1]
+      setSelectedKey(epKey(next))
+    }
+  }
+
   return (
     <div className="w-full space-y-3">
       {nextEpisodeDate && nextEpisodeTime && (
@@ -585,20 +596,40 @@ export function EpisodePlayer({
       <div className="w-full">
         <div className="mb-2 flex items-center justify-between">
           <div className="text-sm font-medium">Episodi</div>
-          <div className="flex items-center gap-4">
+          <div className="flex items-center gap-3 flex-wrap">
             {availableServers.length > 1 && (
               <div className="flex items-center gap-2">
                 <Label htmlFor="server-select" className="text-xs text-muted-foreground">
                   Server:
                 </Label>
                 <Select value={selectedServer} onValueChange={setSelectedServer}>
-                  <SelectTrigger className="w-[120px] h-7 text-xs" id="server-select">
-                    <SelectValue />
+                  <SelectTrigger className="w-[100px] h-7 text-xs" id="server-select">
+                    <SelectValue placeholder="Select server" />
                   </SelectTrigger>
                   <SelectContent>
                     {availableServers.map((server) => (
                       <SelectItem key={server} value={server} className="text-xs">
-                        {server}
+                        {serverDisplayNames[server as keyof typeof serverDisplayNames] || server}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </div>
+            )}
+
+            {isAnimePahe && (
+              <div className="flex items-center gap-2">
+                <Label htmlFor="resolution-select" className="text-xs text-muted-foreground">
+                  Qualità:
+                </Label>
+                <Select value={selectedResolution} onValueChange={setSelectedResolution}>
+                  <SelectTrigger className="w-[90px] h-7 text-xs" id="resolution-select">
+                    <SelectValue placeholder="Risoluzione" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {availableResolutions.map((res) => (
+                      <SelectItem key={res} value={res} className="text-xs">
+                        {res}p
                       </SelectItem>
                     ))}
                   </SelectContent>
@@ -672,7 +703,7 @@ export function EpisodePlayer({
           />
         ) : proxyUrl ? (
           <video
-            key={`${proxyUrl}-${useHlsFallback}`}
+            key={proxyUrl}
             ref={videoRef}
             className="w-full h-full"
             controls
@@ -680,7 +711,7 @@ export function EpisodePlayer({
             preload="metadata"
             autoPlay={autoNext}
             onEnded={onEnd}
-            src={!useHlsFallback ? proxyUrl : undefined}
+            src={proxyUrl}
             onError={() => {
               setError("Errore di riproduzione. Riprovo...")
               if (selectedEpisode) localStorage.removeItem(`anizone:stream:${epKey(selectedEpisode)}`)
@@ -699,19 +730,13 @@ export function EpisodePlayer({
         )}
       </div>
 
-      {streamUrl && !isEmbedServer ? (
-        <div className="text-sm">
-          Apri il link diretto in una nuova scheda:{" "}
-          <a className="underline" href={streamUrl} target="_blank" rel="noreferrer">
-            Apri
-          </a>
-        </div>
-      ) : null}
-
-      {isEmbedServer && (
+      {(isEmbedServer || isAnimePahe) && (
         <div className="text-xs text-muted-foreground">
-          Stai guardando tramite {selectedServer}. Il controllo della riproduzione e il salvataggio della posizione
-          potrebbero essere limitati.
+          Stai guardando tramite{" "}
+          {serverDisplayNames[selectedServer as keyof typeof serverDisplayNames] || selectedServer}.
+          {isAnimePahe && ` Risoluzione: ${selectedResolution}p.`}
+          {isEmbedServer &&
+            " Il controllo della riproduzione e il salvataggio della posizione potrebbero essere limitati."}
         </div>
       )}
     </div>
